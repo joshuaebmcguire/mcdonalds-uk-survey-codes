@@ -1,14 +1,69 @@
 import argparse
 
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from enum import IntEnum
 
 CHARS = "CM7WD6N4RHF9ZL3XKQGVPBTJY"
 BASE = len(CHARS)
 EPOCH_BEGIN = datetime(2016, 2, 1)
-REG_DELIVERY = 61
 
 
-def encode(num):
+@dataclass
+class McDonaldsOrder:
+    store_id: int
+    order_id: int
+    purchased: datetime
+    reg: int
+
+    def __post_init__(self):
+        if isinstance(self.purchased, str):
+            self.purchased = parse_datetime(self.purchased)
+
+    def __eq__(self, other):
+        return self.__dict__ == other.__dict__
+
+    def get_code(self):
+        enc_store_id = encode(self.store_id)
+        enc_order_id = encode((self.order_id % 100) + (get_reg(self.reg) * 100))
+        enc_minutes = encode(get_minutes_since_epoch(self.purchased))
+
+        code = pad(enc_store_id, 3) + pad(enc_order_id, 3) + pad(enc_minutes, 5)
+        code += encode(get_check_digit(code))
+
+        return "{}-{}-{}".format(
+            code[0:4],
+            code[4:8],
+            code[8:12],
+        )
+
+    @classmethod
+    def from_code(cls, code: str):
+        code = code.replace("-", "").upper()
+        str_len = len(code)
+
+        if str_len < 11 or str_len > 12:
+            raise InvalidCode(f"Code must be 11-12 characters (got {str_len}: {code})")
+
+        store_id = decode(code[0:3])
+        order_reg = decode(code[3:6])
+        order_id = order_reg % 100
+        reg = order_reg // 100
+        purchased = EPOCH_BEGIN + timedelta(minutes=decode(code[6:11]))
+
+        return cls(store_id, order_id, purchased, reg)
+
+
+class InvalidCode(Exception):
+    pass
+
+
+class Reg(IntEnum):
+    DELIVERY = 61
+    APP = 300
+
+
+def encode(num: int):
     encoded = ""
     while num >= BASE:
         encoded = CHARS[num % BASE] + encoded
@@ -16,7 +71,7 @@ def encode(num):
     return CHARS[num] + encoded
 
 
-def decode(encoded):
+def decode(encoded: str):
     num = 0
     for x, c in enumerate(encoded):
         exp = len(encoded) - x - 1
@@ -24,17 +79,33 @@ def decode(encoded):
     return num
 
 
-def parse_datetime(val):
+def pad(val: str, amt: int, char: str=encode(0)):
+    return val.rjust(amt, char)
+
+
+def parse_datetime(val: str):
     return datetime.strptime(val, "%Y-%m-%d %H:%M")
 
 
-def get_minutes_since_epoch(purchased):
+def get_minutes_since_epoch(purchased: datetime):
     minutes_since_epoch = purchased - EPOCH_BEGIN
     return int(minutes_since_epoch.total_seconds() / 60)
 
 
-def get_check_digit(code):
-    """Base 25 version of the Luhn algorithm"""
+def get_reg(reg: int):
+    if reg == Reg.DELIVERY:
+        return 0
+    elif reg == Reg.APP:
+        return 1
+    else:
+        return reg
+
+
+def get_check_digit(code: str):
+    """Base 25 version of the Luhn algorithm
+
+    Note: this does not actually provide accurate check digits as the base must be even.
+    """
     check_digit = 0
 
     for x, char in enumerate(code[::-1]):
@@ -57,30 +128,9 @@ def get_check_digit(code):
     return check_digit
 
 
-def generate_code(store_id, order_id, purchased, reg):
-    zero = encode(0)  # Used for padding
-
-    if reg == REG_DELIVERY:
-        reg = 0
-
-    enc_store_id = encode(store_id).rjust(3, zero)
-    enc_order_id = encode((order_id % 100) + (reg * 100)).rjust(3, zero)
-    enc_minutes = encode(get_minutes_since_epoch(purchased)).rjust(5, zero)
-
-    code = enc_store_id + enc_order_id + enc_minutes
-
-    code += encode(get_check_digit(code))
-
-    return "{}-{}-{}".format(
-        code[0:4],
-        code[4:8],
-        code[8:12],
-    )
-
-
-def main(args):
-    code = generate_code(**vars(args))
-    print(code)
+def main(args: argparse.Namespace):
+    order = McDonaldsOrder(**vars(args))
+    print(order.get_code())
 
 
 if __name__ == "__main__":
